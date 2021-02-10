@@ -6,6 +6,7 @@
 #include "std_msgs/String.h"
 #include <sensor_msgs/Range.h>
 
+#include <webots_ros/get_bool.h>
 #include <webots_ros/set_int.h>
 #include <webots_ros/set_float.h>
 #include <webots_ros/Float64Stamped.h>
@@ -26,6 +27,8 @@ static ros::ServiceClient motors[MOTOR_NUMBER];
 static ros::Subscriber sensors[MOTOR_NUMBER];
 static ros::Publisher sensorPublisher;
 gym_env::SensorMessage sensorMessage;
+
+static ros::ServiceClient resetEnv;
 
 static const char *motor_names[MOTOR_NUMBER] = {"1", "2", "3", "4", "5", "6", "7", "7_left"};
 static const char *sensor_name = "_sensor";
@@ -89,7 +92,9 @@ bool closeCallback(gym_env::CloseEnv::Request& request, gym_env::CloseEnv::Respo
 
 bool resetCallback(gym_env::ResetEnv::Request& request, gym_env::ResetEnv::Response& response) {
     ROS_INFO("Reset");
-    return true;
+    webots_ros::get_bool resetSrv;
+    resetSrv.request.ask = true;
+    return resetEnv.call(resetSrv) && resetSrv.response.value;
 }
 
 bool rewardCallback(gym_env::GetReward::Request& request, gym_env::GetReward::Response& response) {
@@ -148,6 +153,8 @@ int main(int argc, char **argv) {
         }
     }
     nameSub.shutdown();
+
+    resetEnv = n.serviceClient<webots_ros::get_bool>(modelName + "/supervisor/simulation_reset");
 
     motorSrv.request.value = 1.0;
 

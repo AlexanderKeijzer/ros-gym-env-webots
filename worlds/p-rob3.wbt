@@ -20,7 +20,7 @@ WorldInfo {
 Viewpoint {
   fieldOfView 0.85
   orientation 0.07205790919748699 -0.9837681149764904 -0.164340967739908 3.9564087129963763
-  position 2.2075102133565356 2.5416667743578176 2.3184445231239157
+  position 3.22495420643976 3.0169030494843736 1.3819438259840082
 }
 TexturedBackground {
   texture "empty_office"
@@ -62,9 +62,10 @@ P-Rob3 {
   translation -1.6 0.74 4.84
   rotation 1 0 0 -1.57079969
   controller "ros"
+  supervisor TRUE
 }
 Can {
-  translation -1.614 0.801098 5.66378
+  translation -0.774 0.801098 4.83378
   name "can(1)"
   mass 0.02
 }
