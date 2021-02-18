@@ -5,7 +5,7 @@
   <include file="$(find webots_ros)/launch/webots.launch">
     <arg name="mode" value="realtime"/>
     <!-- <arg name="no_gui" value="$(arg no_gui)"/> -->
-    <arg name="world" value="$(find gym_env_webots)/worlds/p-rob3.wbt"/>
+    <arg name="world" value="$(find gym_env_webots)/worlds/panda.wbt"/>
   </include>
 
   <arg name="duration" default="20" doc="Duration in seconds"/>

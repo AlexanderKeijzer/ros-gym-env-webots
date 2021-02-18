@@ -7,6 +7,7 @@
 #include <sensor_msgs/Range.h>
 
 #include <webots_ros/get_bool.h>
+#include <webots_ros/get_float.h>
 #include <webots_ros/set_int.h>
 #include <webots_ros/set_float.h>
 #include <webots_ros/Float64Stamped.h>
@@ -21,20 +22,27 @@
 
 #define _USE_MATH_DEFINES
 
-#define MOTOR_NUMBER 8
+#define MOTOR_NUMBER 9
 
 static ros::ServiceClient motors[MOTOR_NUMBER];
+static float motorMin[MOTOR_NUMBER];
+static float motorMax[MOTOR_NUMBER];
 static ros::Subscriber sensors[MOTOR_NUMBER];
 static ros::Publisher sensorPublisher;
 gym_env::SensorMessage sensorMessage;
 
 static ros::ServiceClient resetEnv;
 
-static const char *motor_names[MOTOR_NUMBER] = {"1", "2", "3", "4", "5", "6", "7", "7_left"};
+//static const char *motor_names[MOTOR_NUMBER] = {"1", "2", "3", "4", "5", "6", "7", "7_left"};
+static const char *motor_names[MOTOR_NUMBER] = {"panda_joint1", "panda_joint2",
+ "panda_joint3", "panda_joint4", "panda_joint5", "panda_joint6", "panda_joint7",
+  "panda_finger_joint1", "panda_finger_joint2"};
 static const char *sensor_name = "_sensor";
 
 static char modelList[10][100];
 static int count = 0;
+
+bool finishedInit = false;
 
 float sensor_values[MOTOR_NUMBER];
 
@@ -44,7 +52,7 @@ webots_ros::set_float motorSrv;
 
 void sensorCallback(const webots_ros::Float64Stamped::ConstPtr &value, const int motor) {
     sensor_values[motor] = value->data;
-    sensorMessage.observations = std::vector<float>(sensor_values, sensor_values + MOTOR_NUMBER);
+    sensorMessage.observations = std::vector<float>(std::begin(sensor_values), std::end(sensor_values));
     sensorPublisher.publish(sensorMessage);
     //ROS_INFO("Sensor #%d: %f.", motor, sensor_values[motor]);
 }
@@ -57,16 +65,24 @@ void modelNameCallback(const std_msgs::String::ConstPtr &name) {
 
 bool sensorSpacesCallback(gym_env::RegisterSpaces::Request& request, gym_env::RegisterSpaces::Response& response) {
 
-    response.low = std::vector<float>(MOTOR_NUMBER, -2.967);
-    response.high = std::vector<float>(MOTOR_NUMBER, 2.967);
+    while (!finishedInit) {
+        return false;
+    }
+
+    response.low = std::vector<float>(std::begin(motorMin), std::end(motorMin));
+    response.high = std::vector<float>(std::begin(motorMax), std::end(motorMax));
     response.topic = "/joint_sensors/value";
     return true;
 }
 
 bool actuatorSpacesCallback(gym_env::RegisterSpaces::Request& request, gym_env::RegisterSpaces::Response& response) {
 
-    response.low = std::vector<float>(MOTOR_NUMBER, -2.967);
-    response.high = std::vector<float>(MOTOR_NUMBER, 2.967);
+    while (!finishedInit) {
+        return false;
+    }
+
+    response.low = std::vector<float>(std::begin(motorMin), std::end(motorMin));
+    response.high = std::vector<float>(std::begin(motorMax), std::end(motorMax));
     response.topic = "/joint_actuators/value";
     return true;
 }
@@ -94,7 +110,11 @@ bool resetCallback(gym_env::ResetEnv::Request& request, gym_env::ResetEnv::Respo
     ROS_INFO("Reset");
     webots_ros::get_bool resetSrv;
     resetSrv.request.ask = true;
-    return resetEnv.call(resetSrv) && resetSrv.response.value;
+    bool reset = resetEnv.call(resetSrv) && resetSrv.response.value;
+    if (!reset) {
+        ROS_WARN("Reset Failed!");
+    }
+    return true;
 }
 
 bool rewardCallback(gym_env::GetReward::Request& request, gym_env::GetReward::Response& response) {
@@ -115,18 +135,6 @@ int main(int argc, char **argv) {
     ros::init(argc, argv, "webots_gym");
 
     ros::NodeHandle n;
-
-    ros::ServiceServer sensorService = n.advertiseService("/joint_sensors", sensorSpacesCallback);
-    ros::ServiceServer actuatorService = n.advertiseService("/joint_actuators", actuatorSpacesCallback);
-
-    ros::ServiceServer stepService = n.advertiseService("/webots/step", stepCallback);
-    ros::ServiceServer closeService = n.advertiseService("/webots/close", closeCallback);
-    ros::ServiceServer resetService = n.advertiseService("/webots/reset", resetCallback);
-    ros::ServiceServer rewardService = n.advertiseService("/reward", rewardCallback);
-
-    ros::Subscriber actionSubscriber = n.subscribe("/joint_actuators/value", 1, actuatorCommandCallback);
-    sensorPublisher = n.advertise<gym_env::SensorMessage>("/joint_sensors/value", 1);
-
 
     // declaration of variable names used to define services and topics name dynamically
     std::string modelName;
@@ -161,8 +169,18 @@ int main(int argc, char **argv) {
     webots_ros::set_int enableSensSrv;
     enableSensSrv.request.value = 100;
 
+    webots_ros::get_float gfSrv;
+    gfSrv.request.ask = true;
+
     for (int i = 0; i < MOTOR_NUMBER; ++i) {
         motors[i] = n.serviceClient<webots_ros::set_float>(modelName + "/" + motor_names[i] + "/set_position");
+
+        ros::ServiceClient mmServ = n.serviceClient<webots_ros::get_float>(modelName + "/" + motor_names[i] + "/get_max_position");
+        mmServ.call(gfSrv);
+        motorMax[i] = gfSrv.response.value;
+        mmServ = n.serviceClient<webots_ros::get_float>(modelName + "/" + motor_names[i] + "/get_min_position");
+        mmServ.call(gfSrv);
+        motorMin[i] = gfSrv.response.value;
         //motors[i].call(motorSrv);
         
         ros::ServiceClient sc = n.serviceClient<webots_ros::set_int>(modelName + "/" + motor_names[i] + sensor_name + "/enable");
@@ -173,6 +191,19 @@ int main(int argc, char **argv) {
             }
         }
     }
+
+    ros::ServiceServer sensorService = n.advertiseService("/joint_sensors", sensorSpacesCallback);
+    ros::ServiceServer actuatorService = n.advertiseService("/joint_actuators", actuatorSpacesCallback);
+
+    ros::ServiceServer stepService = n.advertiseService("/webots/step", stepCallback);
+    ros::ServiceServer closeService = n.advertiseService("/webots/close", closeCallback);
+    ros::ServiceServer resetService = n.advertiseService("/webots/reset", resetCallback);
+    ros::ServiceServer rewardService = n.advertiseService("/reward", rewardCallback);
+
+    ros::Subscriber actionSubscriber = n.subscribe("/joint_actuators/value", 1, actuatorCommandCallback);
+    sensorPublisher = n.advertise<gym_env::SensorMessage>("/joint_sensors/value", 1);
+
+    finishedInit = true;
 
 
     ros::spin();
