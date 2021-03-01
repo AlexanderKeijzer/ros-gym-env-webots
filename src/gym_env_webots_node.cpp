@@ -27,11 +27,18 @@
 static ros::ServiceClient motors[MOTOR_NUMBER];
 static float motorMin[MOTOR_NUMBER];
 static float motorMax[MOTOR_NUMBER];
+static float motorRange[MOTOR_NUMBER];
+float motorSetPoints[MOTOR_NUMBER] = {};
+
 static ros::Subscriber sensors[MOTOR_NUMBER];
 static ros::Publisher sensorPublisher;
 gym_env::SensorMessage sensorMessage;
 
 static ros::ServiceClient resetEnv;
+static ros::ServiceClient stepEnv;
+static ros::ServiceClient modeSetSrv;
+webots_ros::set_int modeSetMsgSrv;
+webots_ros::set_int stepEnvMsgSrv;
 
 //static const char *motor_names[MOTOR_NUMBER] = {"1", "2", "3", "4", "5", "6", "7", "7_left"};
 static const char *motor_names[MOTOR_NUMBER] = {"panda_joint1", "panda_joint2",
@@ -46,15 +53,30 @@ bool finishedInit = false;
 
 float sensor_values[MOTOR_NUMBER];
 
-float previousReward = 0.0;
-
 webots_ros::set_float motorSrv;
 
 void sensorCallback(const webots_ros::Float64Stamped::ConstPtr &value, const int motor) {
     sensor_values[motor] = value->data;
     sensorMessage.observations = std::vector<float>(std::begin(sensor_values), std::end(sensor_values));
     sensorPublisher.publish(sensorMessage);
-    //ROS_INFO("Sensor #%d: %f.", motor, sensor_values[motor]);
+    ROS_INFO("Sensor #%d: %f.", motor, sensor_values[motor]);
+}
+
+void initSensors(ros::NodeHandle &n, std::string &modelName) {
+
+    webots_ros::set_int enableSensSrv;
+    enableSensSrv.request.value = 80;
+
+    for (int i = 0; i < MOTOR_NUMBER; ++i) {
+        
+        ros::ServiceClient sc = n.serviceClient<webots_ros::set_int>(modelName + "/" + motor_names[i] + sensor_name + "/enable");
+        if (sc.call(enableSensSrv) && enableSensSrv.response.success) {
+            ROS_INFO("Device %d enabled.", i);
+            sensors[i] = n.subscribe<webots_ros::Float64Stamped>(modelName + "/" + motor_names[i] + sensor_name + "/value", 1, boost::bind(sensorCallback, _1, i));
+            while (sensors[i].getNumPublishers() == 0) {
+            }
+        }
+    }
 }
 
 void modelNameCallback(const std_msgs::String::ConstPtr &name) {
@@ -70,7 +92,9 @@ bool sensorSpacesCallback(gym_env::RegisterSpaces::Request& request, gym_env::Re
     }
 
     response.low = std::vector<float>(std::begin(motorMin), std::end(motorMin));
+    std::for_each(response.low.begin(), response.low.end(), [](float& f) { f-=2e-5;}); //Avoids rounding error triggers
     response.high = std::vector<float>(std::begin(motorMax), std::end(motorMax));
+    std::for_each(response.high.begin(), response.high.end(), [](float& f) { f+=2e-5;}); //Avoids rounding error triggers
     response.topic = "/joint_sensors/value";
     return true;
 }
@@ -81,23 +105,61 @@ bool actuatorSpacesCallback(gym_env::RegisterSpaces::Request& request, gym_env::
         return false;
     }
 
-    response.low = std::vector<float>(std::begin(motorMin), std::end(motorMin));
-    response.high = std::vector<float>(std::begin(motorMax), std::end(motorMax));
+    response.low = std::vector<float>(MOTOR_NUMBER, -1.0);
+    response.high = std::vector<float>(MOTOR_NUMBER, 1.0);
+
+    //response.low = std::vector<float>(std::begin(motorMin), std::end(motorMin));
+    //response.high = std::vector<float>(std::begin(motorMax), std::end(motorMax));
     response.topic = "/joint_actuators/value";
     return true;
 }
 
 void actuatorCommandCallback(const gym_env::ActuatorMessage::ConstPtr &message) {
+    
+    for (int i = 0; i < MOTOR_NUMBER; ++i) {
+        motorSetPoints[i] += motorRange[i]*message->actions[i]/20;
+        motorSetPoints[i] = std::min(std::max(motorSetPoints[i], motorMin[i]), motorMax[i]);
+        motorSrv.request.value = motorSetPoints[i];
+        motors[i].call(motorSrv);
+    }
+}
+
+void initActuators(ros::NodeHandle &n, std::string &modelName) {
+    webots_ros::get_float gfSrv;
+    gfSrv.request.ask = true;
 
     for (int i = 0; i < MOTOR_NUMBER; ++i) {
-        motorSrv.request.value = message->actions[i];
-        motors[i].call(motorSrv);
+        motors[i] = n.serviceClient<webots_ros::set_float>(modelName + "/" + motor_names[i] + "/set_position");
+
+        ros::ServiceClient mmServ = n.serviceClient<webots_ros::get_float>(modelName + "/" + motor_names[i] + "/get_max_position");
+        mmServ.call(gfSrv);
+        motorMax[i] = gfSrv.response.value - 1e-5;
+        mmServ = n.serviceClient<webots_ros::get_float>(modelName + "/" + motor_names[i] + "/get_min_position");
+        mmServ.call(gfSrv);
+        motorMin[i] = gfSrv.response.value + 1e-5;
+        motorRange[i] = motorMax[i] - motorMin[i];
     }
 }
 
 bool stepCallback(gym_env::StepEnv::Request& request, gym_env::StepEnv::Response& response) {
     ROS_INFO("Step");
-    ros::Duration(0.1).sleep();
+
+    /*
+    //Set fast mode
+    modeSetMsgSrv.request.value = 2;
+    modeSetSrv.call(modeSetMsgSrv);
+    */
+
+    //Wait for step to finish
+    while(!(stepEnv.call(stepEnvMsgSrv) && stepEnvMsgSrv.response.success)) {
+        ROS_WARN("Failed step, retrying.");
+    }
+
+    /*
+    //Set realtime mode
+    modeSetMsgSrv.request.value = 1;
+    modeSetSrv.call(modeSetMsgSrv);
+    */
     return true;
 }
 
@@ -106,28 +168,42 @@ bool closeCallback(gym_env::CloseEnv::Request& request, gym_env::CloseEnv::Respo
     return true;
 }
 
-bool resetCallback(gym_env::ResetEnv::Request& request, gym_env::ResetEnv::Response& response) {
+bool resetCallback(gym_env::ResetEnv::Request& request, gym_env::ResetEnv::Response& response, ros::NodeHandle &n, std::string &modelName) {
     ROS_INFO("Reset");
     webots_ros::get_bool resetSrv;
     resetSrv.request.ask = true;
+
     bool reset = resetEnv.call(resetSrv) && resetSrv.response.value;
+
     if (!reset) {
-        ROS_WARN("Reset Failed!");
+        return false;
     }
+    
+    webots_ros::set_int msg;
+    msg.request.value = 8;
+
+    //We need to step for the reset to take effect
+    stepEnv.call(msg);
+
+    while (!(stepEnv.call(msg) && msg.response.success)) {
+        ros::Duration(0.5).sleep(); //Retry every half second
+    }
+    initSensors(n, modelName);
+
+    ROS_INFO("Reset done");
     return true;
 }
 
 bool rewardCallback(gym_env::GetReward::Request& request, gym_env::GetReward::Response& response) {
     float currentReward = 0.0;
-    for (float val : sensor_values) {
-        if (std::abs(val - 0.5) < 0.2)
-            currentReward += 1;
+    for (int i = 0; i < MOTOR_NUMBER; i++) {
+        //ROS_INFO("%f", sensor_values[i]);
+        currentReward -= std::abs(sensor_values[i] - (motorMin[i] + motorRange[i]/2));
     }
-    response.reward = currentReward - previousReward;
+    response.reward = currentReward;
 
     ROS_INFO("Reward %f", response.reward);
 
-    previousReward = currentReward;
     return true;
 }
 
@@ -163,45 +239,25 @@ int main(int argc, char **argv) {
     nameSub.shutdown();
 
     resetEnv = n.serviceClient<webots_ros::get_bool>(modelName + "/supervisor/simulation_reset");
+    stepEnv = n.serviceClient<webots_ros::set_int>(modelName + "/robot/time_step");
+    stepEnvMsgSrv.request.value = 80; //ms
 
-    motorSrv.request.value = 1.0;
+    initActuators(n, modelName);
+    initSensors(n, modelName);
 
-    webots_ros::set_int enableSensSrv;
-    enableSensSrv.request.value = 100;
-
-    webots_ros::get_float gfSrv;
-    gfSrv.request.ask = true;
-
-    for (int i = 0; i < MOTOR_NUMBER; ++i) {
-        motors[i] = n.serviceClient<webots_ros::set_float>(modelName + "/" + motor_names[i] + "/set_position");
-
-        ros::ServiceClient mmServ = n.serviceClient<webots_ros::get_float>(modelName + "/" + motor_names[i] + "/get_max_position");
-        mmServ.call(gfSrv);
-        motorMax[i] = gfSrv.response.value;
-        mmServ = n.serviceClient<webots_ros::get_float>(modelName + "/" + motor_names[i] + "/get_min_position");
-        mmServ.call(gfSrv);
-        motorMin[i] = gfSrv.response.value;
-        //motors[i].call(motorSrv);
-        
-        ros::ServiceClient sc = n.serviceClient<webots_ros::set_int>(modelName + "/" + motor_names[i] + sensor_name + "/enable");
-        if (sc.call(enableSensSrv) && enableSensSrv.response.success) {
-            ROS_INFO("Device %d enabled.", i);
-            sensors[i] = n.subscribe<webots_ros::Float64Stamped>(modelName + "/" + motor_names[i] + sensor_name + "/value", 1, boost::bind(sensorCallback, _1, i));
-            while (sensors[i].getNumPublishers() == 0) {
-            }
-        }
-    }
+    //modeSetSrv = n.serviceClient<webots_ros::set_int>(modelName + "/supervisor/simulation_set_mode");
 
     ros::ServiceServer sensorService = n.advertiseService("/joint_sensors", sensorSpacesCallback);
     ros::ServiceServer actuatorService = n.advertiseService("/joint_actuators", actuatorSpacesCallback);
 
     ros::ServiceServer stepService = n.advertiseService("/webots/step", stepCallback);
     ros::ServiceServer closeService = n.advertiseService("/webots/close", closeCallback);
-    ros::ServiceServer resetService = n.advertiseService("/webots/reset", resetCallback);
+    ros::ServiceServer resetService = n.advertiseService<gym_env::ResetEnv::Request, gym_env::ResetEnv::Response>("/webots/reset", boost::bind(resetCallback, _1, _2, boost::ref(n), boost::ref(modelName)));
     ros::ServiceServer rewardService = n.advertiseService("/reward", rewardCallback);
 
     ros::Subscriber actionSubscriber = n.subscribe("/joint_actuators/value", 1, actuatorCommandCallback);
     sensorPublisher = n.advertise<gym_env::SensorMessage>("/joint_sensors/value", 1);
+
 
     finishedInit = true;
 

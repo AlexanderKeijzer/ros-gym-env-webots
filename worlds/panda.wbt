@@ -19,8 +19,8 @@ WorldInfo {
 }
 Viewpoint {
   fieldOfView 0.85
-  orientation 0.023552849845365657 -0.9861332931368257 -0.16427535247650746 3.1943240402525603
-  position -0.5513559627804164 2.755356824966033 -0.63382394344882
+  orientation -0.010967708735938764 -0.9862199966647703 -0.165075217836064 3.182795623430447
+  position -0.5294574694116211 2.916223558380113 -1.1013980694113528
 }
 TexturedBackground {
   texture "empty_office"
@@ -61,6 +61,9 @@ Table {
 Panda {
   translation -1.53 0.74 4.84
   controller "ros"
+  controllerArgs [
+    "--synchronize"
+  ]
   supervisor TRUE
 }
 Can {
